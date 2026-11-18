@@ -1,0 +1,36 @@
+<#
+.SYNOPSIS
+    Restores the original LibreHardwareMonitorLib (and any DLL it overwrote) from the most recent
+    backup made by install.ps1, and removes the DLLs that install.ps1 added.
+    Run from an elevated PowerShell.
+    Note: the original library will reinstall the vulnerable WinRing0 driver on next start.
+#>
+[CmdletBinding()]
+param([string]$TrafficMonitorPath = 'C:\Program Files\TrafficMonitor')
+$ErrorActionPreference = 'Stop'
+
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) { Write-Host '[X] Run from an elevated PowerShell.' -ForegroundColor Red; exit 1 }
+
+$backup = Get-ChildItem $TrafficMonitorPath -Directory -Filter '_backup_lhm_*' | Sort-Object Name -Descending | Select-Object -First 1
+if (-not $backup) { Write-Host "[X] No _backup_lhm_* folder in $TrafficMonitorPath" -ForegroundColor Red; exit 1 }
+Write-Host "[*] Restoring from $($backup.FullName)"
+
+$wasRunning = [bool](Get-Process TrafficMonitor -ErrorAction SilentlyContinue)
+if ($wasRunning) {
+    taskkill /im TrafficMonitor.exe | Out-Null
+    for ($i = 0; $i -lt 20 -and (Get-Process TrafficMonitor -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 500 }
+    if (Get-Process TrafficMonitor -ErrorAction SilentlyContinue) { Stop-Process -Name TrafficMonitor -Force }
+}
+
+# Remove DLLs that were added (not present before), then restore the saved originals
+$listFile = Join-Path $backup.FullName 'installed-files.txt'
+if (Test-Path $listFile) {
+    foreach ($name in Get-Content $listFile) {
+        if (-not (Test-Path (Join-Path $backup.FullName $name))) { Remove-Item (Join-Path $TrafficMonitorPath $name) -Force -ErrorAction SilentlyContinue }
+    }
+}
+Get-ChildItem $backup.FullName -Filter *.dll | ForEach-Object { Copy-Item $_.FullName (Join-Path $TrafficMonitorPath $_.Name) -Force }
+Write-Host ("[OK] LibreHardwareMonitorLib {0} restored" -f (Get-Item (Join-Path $TrafficMonitorPath 'LibreHardwareMonitorLib.dll')).VersionInfo.FileVersion) -ForegroundColor Green
+
+if ($wasRunning) { Start-Process (Join-Path $TrafficMonitorPath 'TrafficMonitor.exe') }
